@@ -3,7 +3,6 @@ package com.trendyol.bootcamp.flink.homework
 import java.time.Duration
 
 import com.trendyol.bootcamp.flink.common._
-import com.trendyol.bootcamp.flink.example.UserStats
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
 import org.apache.flink.api.common.restartstrategy.RestartStrategies
 import org.apache.flink.streaming.api.CheckpointingMode
@@ -16,12 +15,11 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow
 import org.apache.flink.util.Collector
 import org.slf4j.{Logger, LoggerFactory}
 
-import scala.Int.int2double
-
 case class PurchaseLikelihood(userId: Int, productId: Int, likelihood: Double)
 
 object LikelihoodToPurchaseCalculator {
 
+  // Related coefficient of each event to purchase or not.
   val l2pCoefficients = Map(
     AddToBasket         -> 0.4,
     RemoveFromBasket    -> -0.2,
@@ -34,12 +32,15 @@ object LikelihoodToPurchaseCalculator {
 
   def main(args: Array[String]): Unit = {
 
+    // Get execution environment and configure checkpoint and restart strategy settings.
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.enableCheckpointing(60000, CheckpointingMode.AT_LEAST_ONCE)
     env.setRestartStrategy(RestartStrategies.fixedDelayRestart(100, 15000))
 
-    // TODO Use processing time
-
+    // Source: RandomEventSource, Sink: PrintSinkFunction
+    // Firstly, filter events which have effect on the likelihood ratio of purchase.
+    // Then, group the elements according to their userId and productId by using keyBy.
+    // After that process, we will have group of userId and productId pairs.
     val keyedStream = env
       .addSource(new RandomEventSource)
       .filter(e => List(AddToBasket, AddToFavorites, RemoveFromBasket, RemoveFromFavorites, DisplayBasket).contains(e.eventType))
@@ -55,6 +56,7 @@ object LikelihoodToPurchaseCalculator {
       )
       .keyBy(e => (e.userId, e.productId))
 
+    // Set Time Window Interval as 20 seconds.
     keyedStream
       .window(TumblingEventTimeWindows.of(Time.seconds(20)))
       .process(
@@ -69,15 +71,21 @@ object LikelihoodToPurchaseCalculator {
               PurchaseLikelihood(
                 key._1,
                 key._2,
-                // TODO Get average of element's l2coefficients.
-                elements.size
+                // Map Event of Elements to L2pCoefficient List, then get average of them for final L2pCoefficient.
+                // Let say, we have AddToFavorites and AddToBasket for one of our userID, productID.
+                // The final likelihood to purchase will be (0.7 + 0.4)/2 = 0.55
+                elements
+                  .map(e => l2pCoefficients.getOrElse(e.eventType, 0).asInstanceOf[Double])
+                  .sum
+                  / elements.size
               )
             )
         }
       )
       .addSink(new PrintSinkFunction[PurchaseLikelihood])
 
-    env.execute("Event Streamer")
+    // Set job name.
+    env.execute("Likelihood to Purchase Calculator")
   }
 
 }
